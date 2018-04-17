@@ -21,7 +21,7 @@ setup(name='cv2pynq',
       '' : ['*.bit','*.tcl','*.py','*.so'],
       },
       install_requires=[
-          'pynq','numpy',
+          'pynq','numpy','cffi'
       ],
       dependency_links=['http://github.com/xilinx/PYNQ'],
       zip_safe=False)

@@ -4,6 +4,7 @@ from pynq import Overlay, PL, MMIO
 from pynq import DefaultIP, DefaultHierarchy
 from pynq import Xlnk
 from pynq.lib import DMA
+from cffi import FFI
 
 CV2PYNQ_ROOT_DIR = os.path.dirname(os.path.realpath(__file__))
 CV2PYNQ_BIT_DIR = os.path.join(CV2PYNQ_ROOT_DIR, 'bitstreams')
@@ -24,7 +25,10 @@ class cv2pynq():
         #else:
         #    raise RuntimeError("Incorrect Overlay loaded")
         self.xlnk = Xlnk()
-        self.input_buffer  = self.xlnk.cma_array(shape=(self.MAX_HEIGHT,self.MAX_WIDTH), dtype=np.uint8)
+        #self.input_buffer  = self.xlnk.cma_array(shape=(self.MAX_HEIGHT,self.MAX_WIDTH), dtype=np.uint8)
+        self.partitions = 10 #split the cma into partitions for pipelined transfer
+        self.cmaPartitionLen = self.MAX_HEIGHT*self.MAX_WIDTH/self.partitions
+        self.listOfcma = [self.xlnk.cma_array(shape=(int(self.MAX_HEIGHT/self.partitions),self.MAX_WIDTH), dtype=np.uint8) for i in range(self.partitions)]
         self.output_buffer = self.xlnk.cma_array(shape=(self.MAX_HEIGHT,self.MAX_WIDTH), dtype=np.uint8)
         self.dmaOut = self.ol.image_filters.axi_dma_0.sendchannel 
         self.dmaIn =  self.ol.image_filters.axi_dma_0.recvchannel 
@@ -32,7 +36,8 @@ class cv2pynq():
         self.dmaIn.stop()
         self.dmaIn.start()
         self.dmaOut.start()
-        self.filter = -1 # filter types: SobelX = 1, SobelY = 2
+        self.filter = "" # filter types: SobelX, SobelY, ScharrX, ScharrY
+        self.ffi = FFI()
 
     #def __del__(self):
     #    self.input_buffer.close()
@@ -40,15 +45,37 @@ class cv2pynq():
     #    self.dmaOut.stop()
     #    self.dmaIn.stop()
     #    print("_del_")
-    
+
     def filter2D(self, src):
         f2D = self.ol.image_filters.filter2D_hls_0
         f2D.start()
-        np.copyto(self.output_buffer,src)
-        self.dmaIn.transfer(self.input_buffer)
-        self.dmaOut.transfer(self.output_buffer)
-        self.dmaIn.wait()
-        return self.input_buffer.copy()
+        ret = self.xlnk.cma_array(src.shape, dtype=np.uint8)
+        if hasattr(src, 'physical_address') :
+            self.dmaIn.transfer(ret)
+            self.dmaOut.transfer(src)
+            self.dmaIn.wait()
+        else:#pipeline the copy to continuous memory and filter calculation in hardware
+            chunks = int(src.nbytes / (self.cmaPartitionLen) )
+            pointerCma = self.ffi.cast("uint8_t *",  self.ffi.from_buffer(self.listOfcma[0]))
+            pointerToImage = self.ffi.cast("uint8_t *", self.ffi.from_buffer(src))
+            if chunks > 0:
+                self.ffi.memmove(pointerCma, pointerToImage, self.listOfcma[0].nbytes)
+                self.dmaIn.transfer(ret)
+            for i in range(1,chunks):
+                self.dmaOut.transfer(self.listOfcma[i-1])
+                pointerCma = self.ffi.cast("uint8_t *",  self.ffi.from_buffer(self.listOfcma[i]))
+                self.ffi.memmove(pointerCma, pointerToImage+i*self.listOfcma[i].nbytes, self.listOfcma[i].nbytes)
+            if chunks > 0:
+                self.dmaOut.transfer(self.listOfcma[chunks-1])
+            if(src.nbytes % self.cmaPartitionLen != 0):#cleanup code - handle rest of image
+                rest = self.xlnk.cma_array(shape=(int(src.nbytes-chunks*self.cmaPartitionLen),1), dtype=np.uint8)
+                pointerCma = self.ffi.cast("uint8_t *",  self.ffi.from_buffer(rest))
+                self.ffi.memmove(pointerCma, pointerToImage+int(chunks*self.cmaPartitionLen), rest.nbytes)
+                while not self.dmaOut.idle:
+                    pass 
+                self.dmaOut.transfer(rest)
+            self.dmaIn.wait()
+        return ret
 
     def Sobel(self,src, ddepth, dx, dy):
         #print(self.bitstream_name)
@@ -58,21 +85,50 @@ class cv2pynq():
         f2D.rows = src.shape[0]
         f2D.columns = src.shape[1]
         f2D.channels = 1
-        if (self.filter != 1) and (dx == 1) and (dy == 0) :
-            self.filter = 1
+        if (self.filter != "SobelX") and (dx == 1) and (dy == 0) :
+            self.filter = "SobelX"
             f2D.r1 = 0x000100ff #[-1  0  1]
             f2D.r2 = 0x000200fe #[-2  0  2]
             f2D.r3 = 0x000100ff #[-1  0  1]
-        elif (self.filter != 2) and (dx == 0) and (dy == 1) :
-            self.filter = 2
+        elif (self.filter != "SobelY") and (dx == 0) and (dy == 1) :
+            self.filter = "SobelY"
             f2D.r1 = 0x00fffeff #[-1 -2 -1]
             f2D.r2 = 0x00000000 #[ 0  0  0]
             f2D.r3 = 0x00010201 #[ 1  2  1]
         else:
-            raise RuntimeError("Incorrect dx dy configuration")
-        
+            raise RuntimeError("Incorrect dx dy configuration")  
         return self.filter2D(src)
 
+    def Scharr(self,src, ddepth, dx, dy):
+        f2D = self.ol.image_filters.filter2D_hls_0
+        f2D.rows = src.shape[0]
+        f2D.columns = src.shape[1]
+        f2D.channels = 1
+        if (self.filter != "ScharrX") and (dx == 1) and (dy == 0) :
+            self.filter = "ScharrX"
+            f2D.r1 = 0x000300fd #[-3  0  3]
+            f2D.r2 = 0x000a00f6 #[-10 0 10]
+            f2D.r3 = 0x000300fd #[-3  0  3]
+        elif (self.filter != "ScharrY") and (dx == 0) and (dy == 1) :
+            self.filter = "ScharrY"
+            f2D.r1 = 0x00fdf6fd #[-3 -10 -3]
+            f2D.r2 = 0x00000000 #[ 0   0  0]
+            f2D.r3 = 0x00030a03 #[ 3  10  3]
+        else:
+            raise RuntimeError("Incorrect dx dy configuration")  
+        return self.filter2D(src)
+
+    def Laplacian(self,src, ddepth):
+        f2D = self.ol.image_filters.filter2D_hls_0
+        f2D.rows = src.shape[0]
+        f2D.columns = src.shape[1]
+        f2D.channels = 1
+        if (self.filter != "Laplacian")  :
+            self.filter = "Laplacian"
+            f2D.r1 = 0x00000100 #[ 0  1  0]
+            f2D.r2 = 0x0001fc01 #[ 1 -4  1]
+            f2D.r3 = 0x00000100 #[ 0  1  0] 
+        return self.filter2D(src)
 class cv2pynqDiverImageFilters(DefaultHierarchy):
     def __init__(self, description):
         super().__init__(description)
