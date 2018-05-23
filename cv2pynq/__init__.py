@@ -39,3 +39,21 @@ def Laplacian(src, ddepth, dst=0, ksize=1, scale=1, delta=0, borderType=cv2.BORD
                 if (ddepth == -1) :
                     return c.Laplacian(src, ddepth)   
     return cv2.Laplacian(src, ddepth, dst, ksize, scale, delta, borderType)
+
+def blur(src, ksize, dst=0, anchor=(-1,-1), borderType=cv2.BORDER_DEFAULT):
+    """dst = cv.blur( src, ksize[, dst[, anchor[, borderType]]])
+    Smooths an image using the kernel on hardware if input parameters fit to hardware constraints.
+    Otherwise the OpenCV blur function is called."""
+    if (dst == 0) and (ksize == (3,3)) and (anchor == (-1,-1)) and (borderType == cv2.BORDER_DEFAULT) :
+        if (src.dtype == np.uint8) and (src.ndim == 2) :
+            return c.blur(src, ksize)
+    return cv2.blur(src,ksize,dst,anchor,borderType)
+
+def GaussianBlur(src, ksize, sigmaX, dst=0, sigmaY=0, borderType=cv2.BORDER_DEFAULT):
+    """	dst	= cv.GaussianBlur( src, ksize, sigmaX[, dst[, sigmaY[, borderType]]])
+    Smooths an image using a Gaussian kernel on hardware if input parameters fit to hardware constraints.
+    Otherwise the OpenCV GaussianBlur function is called."""
+    if (dst == 0) and (ksize == (3,3)) and (borderType == cv2.BORDER_DEFAULT) :
+        if (src.dtype == np.uint8) and (src.ndim == 2) :
+            return c.GaussianBlur(src, ksize, sigmaX, sigmaY, dst)
+    return cv2.GaussianBlur(src,ksize,dst,anchor,borderType)
