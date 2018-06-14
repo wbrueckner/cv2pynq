@@ -3,5 +3,6 @@ Python package which accelerates OpenCV image filtering functions for the PYNQ f
 
 ##Installation
 Install by typing: `pip3.6 install git+https://github.com/wbrueckner/cv2pynq.git` into the terminal on your Pynq-Z1 board 
+or by typing `pip3.6 install -e .` in the cloned directory
 
 Remove by typing: `pip3.6 uninstall cv2pynq`
