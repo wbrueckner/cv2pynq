@@ -4,7 +4,7 @@ import numpy as np
 from .cv2pynq import *
 from pynq.lib.video import *
 
-__version__ = 0.2
+__version__ = 0.3
 
 c = cv2pynq()
 video = c.ol.video #cv2pynq uses the pynq video library and the Pynq-Z1 video subsystem
