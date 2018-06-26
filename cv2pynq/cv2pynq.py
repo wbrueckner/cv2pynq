@@ -37,11 +37,14 @@ class cv2pynq():
         self.dmaIn.stop()
         self.dmaIn.start()
         self.dmaOut.start()
-        self.filter2DType = -1  # filter types: SobelX=0, SobelY=1, ScharrX=2, ScharrY=3, Laplacian=4
+        self.filter2DType = -1  # filter types: SobelX=0, SobelY=1, ScharrX=2, ScharrY=3, Laplacian1=4, Laplacian3=5
+        self.filter2D_5Type = -1  # filter types: SobelX=0, SobelY=1,                     Laplacian5=4
         self.filter2DfType = -1 # filter types: blur=0, GaussianBlur=1
         self.ffi = FFI()
         self.f2D = self.img_filters.filter2D_hls_0
         self.f2D.reset()
+        self.f2D_5 = self.img_filters.filter2D_hls_5_0
+        self.f2D_5.reset()
         self.f2D_f = self.img_filters.filter2D_f_0
         self.f2D_f.reset()
         self.erodeIP = self.img_filters.erode_hls_0
@@ -54,27 +57,35 @@ class cv2pynq():
         self.cmaBuffer_1 = self.xlnk.cma_array(shape=(self.MAX_HEIGHT,self.MAX_WIDTH), dtype=np.uint8)
         self.cmaBuffer1 =  self.cmaBuffer_1.view(self.ContiguousArrayCv2pynq)
         self.cmaBuffer1.init(self.cmaBuffer_1)
-        self.cmaBuffer_2 = self.xlnk.cma_array(shape=(self.MAX_HEIGHT,self.MAX_WIDTH), dtype=np.uint8)
+        self.cmaBuffer_2 = self.xlnk.cma_array(shape=(self.MAX_HEIGHT*4,self.MAX_WIDTH), dtype=np.uint8) # *4 for CornerHarris return
         self.cmaBuffer2 =  self.cmaBuffer_2.view(self.ContiguousArrayCv2pynq)
         self.cmaBuffer2.init(self.cmaBuffer_2)
+        self.CannyIP = self.img_filters.canny_edge_0
+        self.CannyIP.reset()
+        #self.cornerHarrisIP = self.img_filters.CornerHarris_hls_0
+        #self.cornerHarrisIP.reset()
 
-    #def __del__(self):
-    #    self.dmaOut.stop()
-    #    self.dmaIn.stop()
-    #    print("_del_")
+    def close(self):
+        self.dmaOut.stop()
+        self.dmaIn.stop()
+        self.cmaBuffer_0.close()
+        self.cmaBuffer_1.close()
+        self.cmaBuffer_2.close()
+        for cma in self.listOfcma:
+            cma.close()      
+
 
     def filter2D(self, src, dst):
-        self.img_filters.select_filter(1)
-        self.f2D.start()
         if dst is None :
-            ret = self.xlnk.cma_array(src.shape, dtype=np.uint8)
+            self.cmaBuffer1.nbytes = src.nbytes
+            #ret = self.xlnk.cma_array(src.shape, dtype=np.uint8)
         elif hasattr(src, 'physical_address') and hasattr(dst, 'physical_address') :
             self.dmaIn.transfer(dst)
             self.dmaOut.transfer(src)
             self.dmaIn.wait()
             return dst
         if hasattr(src, 'physical_address') :
-            self.dmaIn.transfer(ret)
+            self.dmaIn.transfer(self.cmaBuffer1)
             self.dmaOut.transfer(src)
             self.dmaIn.wait()
         else:#pipeline the copy to continuous memory and filter calculation in hardware
@@ -83,7 +94,7 @@ class cv2pynq():
             pointerToImage = self.ffi.cast("uint8_t *", self.ffi.from_buffer(src))
             if chunks > 0:
                 self.ffi.memmove(pointerCma, pointerToImage, self.listOfcma[0].nbytes)
-                self.dmaIn.transfer(ret)
+                self.dmaIn.transfer(self.cmaBuffer1)
             for i in range(1,chunks):
                 while not self.dmaOut.idle and not self.dmaOut._first_transfer:
                     pass 
@@ -102,27 +113,70 @@ class cv2pynq():
                     pass 
                 self.dmaOut.transfer(rest)
             self.dmaIn.wait()
+        ret = np.ndarray(src.shape,src.dtype)
+        self.copyNto(ret,self.cmaBuffer1,ret.nbytes)
         return ret
 
-    def Sobel(self,src, ddepth, dx, dy, dst):
-        self.f2D.rows = src.shape[0]
-        self.f2D.columns = src.shape[1]
-        self.f2D.channels = 1
-        if (dx == 1) and (dy == 0) :
-            if self.filter2DType != 0 :
-                self.filter2DType = 0
-                self.f2D.r1 = 0x000100ff #[-1  0  1]
-                self.f2D.r2 = 0x000200fe #[-2  0  2]
-                self.f2D.r3 = 0x000100ff #[-1  0  1]
-        elif (dx == 0) and (dy == 1) :
-            if self.filter2DType != 1 :
-                self.filter2DType = 1
-                self.f2D.r1 = 0x00fffeff #[-1 -2 -1]
-                self.f2D.r2 = 0x00000000 #[ 0  0  0]
-                self.f2D.r3 = 0x00010201 #[ 1  2  1]
-        else:
-            raise RuntimeError("Incorrect dx dy configuration")  
-        return self.filter2D(src, dst)
+    def Sobel(self,src, ddepth, dx, dy, dst, ksize):
+        if(ksize == 3):
+            self.f2D.rows = src.shape[0]
+            self.f2D.columns = src.shape[1]
+            self.f2D.channels = 1
+            if (dx == 1) and (dy == 0) :
+                if self.filter2DType != 0 :
+                    self.filter2DType = 0
+                    self.f2D.r1 = 0x000100ff #[-1  0  1]
+                    self.f2D.r2 = 0x000200fe #[-2  0  2]
+                    self.f2D.r3 = 0x000100ff #[-1  0  1]
+            elif (dx == 0) and (dy == 1) :
+                if self.filter2DType != 1 :
+                    self.filter2DType = 1
+                    self.f2D.r1 = 0x00fffeff #[-1 -2 -1]
+                    self.f2D.r2 = 0x00000000 #[ 0  0  0]
+                    self.f2D.r3 = 0x00010201 #[ 1  2  1]
+            else:
+                raise RuntimeError("Incorrect dx dy configuration")
+            self.img_filters.select_filter(1)
+            self.f2D.start()  
+            return self.filter2D(src, dst)
+        else:   #ksize == 5
+            self.f2D_5.rows = src.shape[0]
+            self.f2D_5.columns = src.shape[1]
+            if (dx == 1) and (dy == 0) :
+                if self.filter2D_5Type != 0 :
+                    self.filter2D_5Type = 0
+                    self.f2D_5.par_V = bytes([ \
+                    #-1,  -2,   0,    2,    1,
+                    0xff, 0xfe, 0x00, 0x02, 0x01, \
+                    #-4,  -8,   0,    8,    4,
+                    0xfc, 0xf8, 0x00, 0x08, 0x04, \
+                    #-6,  -12,  0,    12,   6,
+                    0xfa, 0xf4, 0x00, 0x0c, 0x06, \
+                    #-4,  -8,   0,    8,    4,
+                    0xfc, 0xf8, 0x00, 0x08, 0x04, \
+                    #-1,  -2,   0,    2,    1,
+                    0xff, 0xfe, 0x00, 0x02, 0x01, \
+                    0,0,0]) #fill up to allign with 4
+            elif (dx == 0) and (dy == 1) :
+                if self.filter2D_5Type != 1 :
+                    self.filter2D_5Type = 1
+                    self.f2D_5.par_V = bytes([ \
+                    #-1,  -4,   -6,   -4,   -1,
+                    0xff, 0xfc, 0xfa, 0xfc, 0xff, \
+                    #-2,  -8,   -12,  -8,   -2,
+                    0xfe, 0xf8, 0xf4, 0xf8, 0xfe, \
+                    # 0,  0,    0,    0,    0,
+                    0x00, 0x00, 0x00, 0x00, 0x00, \
+                    # 2,  8,    12,   8,    2,
+                    0x02, 0x08, 0x0c, 0x08, 0x02, \
+                    # 1,  4,    6,    4,    1,
+                    0x01, 0x04, 0x06, 0x04, 0x01, \
+                    0,0,0]) #fill up to allign with 4
+            else:
+                raise RuntimeError("Incorrect dx dy configuration")
+            self.img_filters.select_filter(5)
+            self.f2D_5.start()  
+            return self.filter2D(src, dst)  
 
     def Scharr(self,src, ddepth, dx, dy, dst):
         self.f2D.rows = src.shape[0]
@@ -141,33 +195,66 @@ class cv2pynq():
                 self.f2D.r2 = 0x00000000 #[ 0   0  0]
                 self.f2D.r3 = 0x00030a03 #[ 3  10  3]
         else:
-            raise RuntimeError("Incorrect dx dy configuration")  
+            raise RuntimeError("Incorrect dx dy configuration") 
+        self.img_filters.select_filter(1)
+        self.f2D.start() 
         return self.filter2D(src, dst)
 
-    def Laplacian(self,src, ddepth, dst):
-        self.f2D.rows = src.shape[0]
-        self.f2D.columns = src.shape[1]
-        self.f2D.channels = 1
-        if (self.filter2DType != 4)  :
-            self.filter2DType = 4 # "Laplacian"
-            self.f2D.r1 = 0x00000100 #[ 0  1  0]
-            self.f2D.r2 = 0x0001fc01 #[ 1 -4  1]
-            self.f2D.r3 = 0x00000100 #[ 0  1  0] 
-        return self.filter2D(src, dst)
+    def Laplacian(self,src, ddepth, dst, ksize):
+        if ksize == 5:
+            self.f2D_5.rows = src.shape[0]
+            self.f2D_5.columns = src.shape[1]
+            if self.filter2D_5Type != 4 :
+                self.filter2D_5Type = 4 # "Laplacian_5"
+                self.f2D_5.par_V = bytes([ \
+                #2,   4,    4,    4,    2,
+                0x02, 0x04, 0x04, 0x04, 0x02, \
+                #4,   0,    -8,   0,    4,
+                0x04, 0x00, 0xf8, 0x00, 0x04, \
+                #4,   -8,   -24,  -8,   4,
+                0x04, 0xf8, 0xe8, 0xf8, 0x04, \
+                #4,   0,    -8,   0,    4,
+                0x04, 0x00, 0xf8, 0x00, 0x04, \
+                #2,   4,    4,    4,    2,
+                0x02, 0x04, 0x04, 0x04, 0x02, \
+                0,0,0]) #fill up to allign with 4
+            self.img_filters.select_filter(5)
+            self.f2D_5.start() 
+            return self.filter2D(src, dst) 
+        else: #ksize 1 or 3
+            self.f2D.rows = src.shape[0]
+            self.f2D.columns = src.shape[1]
+            self.f2D.channels = 1
+            if ksize == 1:
+                if (self.filter2DType != 4)  :
+                    self.filter2DType = 4 # "Laplacian_1"
+                    self.f2D.r1 = 0x00000100 #[ 0  1  0]
+                    self.f2D.r2 = 0x0001fc01 #[ 1 -4  1]
+                    self.f2D.r3 = 0x00000100 #[ 0  1  0] 
+            elif ksize == 3:
+                if (self.filter2DType != 5)  :
+                    self.filter2DType = 5 # "Laplacian_3"
+                    self.f2D.r1 = 0x00020002 #[ 2  0  2]
+                    self.f2D.r2 = 0x0000f800 #[ 0 -8  0]
+                    self.f2D.r3 = 0x00020002 #[ 2  0  2] 
+            self.img_filters.select_filter(1)
+            self.f2D.start()
+            return self.filter2D(src, dst)
     
     def filter2D_f(self, src, dst):
         self.img_filters.select_filter(2)
         #f2D = self.img_filters.filter2D_f_0
         self.f2D_f.start()
         if dst is None :
-            ret = self.xlnk.cma_array(src.shape, dtype=np.uint8)
+            self.cmaBuffer1.nbytes = src.nbytes
+            #ret = self.xlnk.cma_array(src.shape, dtype=np.uint8)
         elif hasattr(src, 'physical_address') and hasattr(dst, 'physical_address') :
             self.dmaIn.transfer(dst)
             self.dmaOut.transfer(src)
             self.dmaIn.wait()
             return dst
         if hasattr(src, 'physical_address') :
-            self.dmaIn.transfer(ret)
+            self.dmaIn.transfer(self.cmaBuffer1)
             self.dmaOut.transfer(src)
             self.dmaIn.wait()
         else:#pipeline the copy to continuous memory and filter calculation in hardware
@@ -176,7 +263,7 @@ class cv2pynq():
             pointerToImage = self.ffi.cast("uint8_t *", self.ffi.from_buffer(src))
             if chunks > 0:
                 self.ffi.memmove(pointerCma, pointerToImage, self.listOfcma[0].nbytes)
-                self.dmaIn.transfer(ret)
+                self.dmaIn.transfer(self.cmaBuffer1)
             for i in range(1,chunks):
                 while not self.dmaOut.idle and not self.dmaOut._first_transfer:
                     pass 
@@ -195,6 +282,8 @@ class cv2pynq():
                     pass 
                 self.dmaOut.transfer(rest)
             self.dmaIn.wait()
+        ret = np.ndarray(src.shape,src.dtype)
+        self.copyNto(ret,self.cmaBuffer1,ret.nbytes)
         return ret
 
     def floatToFixed(self, f, total_bits, fract_bits):
@@ -242,16 +331,8 @@ class cv2pynq():
             self.f2D_f.r32 = self.floatToFixed(kY[2]*kX[1], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
             self.f2D_f.r33 = self.floatToFixed(kY[2]*kX[2], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
         return self.filter2D_f(src, dst)
-
-    def erode(self, src, kernel, dst, iterations, mode):
-        self.img_filters.select_filter(3)
-        return erodeDilateKernel(src, kernel, dst, iterations, mode, self.erodeIP)
     
-    def dilate(self, src, kernel, dst, iterations, mode):
-        self.img_filters.select_filter(4)
-        return erodeDilateKernel(src, kernel, dst, iterations, mode, self.dilateIP)
-    
-    def erodeDilateKernel(self, src, kernel, dst, iterations, mode, filter)
+    def erodeDilateKernel(self, src, kernel, dst, iterations, mode, filter):
         filter.mode = mode
         filter.rows = src.shape[0]
         filter.columns = src.shape[1]
@@ -306,6 +387,64 @@ class cv2pynq():
         else:
             self.copyNto(ret,self.cmaBuffer2,ret.nbytes)
         return ret
+
+    def erode(self, src, kernel, dst, iterations, mode):
+        self.img_filters.select_filter(3)
+        return self.erodeDilateKernel(src, kernel, dst, iterations, mode, self.erodeIP)
+    
+    def dilate(self, src, kernel, dst, iterations, mode):
+        self.img_filters.select_filter(4)
+        return self.erodeDilateKernel(src, kernel, dst, iterations, mode, self.dilateIP)
+    
+    def Canny(self, src, threshold1, threshold2, dst):
+        self.img_filters.select_filter(0)
+        self.CannyIP.rows = src.shape[0]
+        self.CannyIP.columns = src.shape[1]
+        self.CannyIP.threshold1 = threshold1
+        self.CannyIP.threshold2 = threshold2
+        self.CannyIP.start()
+        if hasattr(src, 'physical_address') and hasattr(dst, 'physical_address'):    
+            self.dmaIn.transfer(dst)
+            self.dmaOut.transfer(src)
+            self.dmaIn.wait()
+            return dst
+        
+        self.cmaBuffer1.nbytes = src.nbytes
+        self.dmaIn.transfer(self.cmaBuffer1)
+        if hasattr(src, 'physical_address') :
+            self.dmaOut.transfer(src)        
+        else:
+            self.cmaBuffer0.nbytes = src.nbytes
+            self.copyNto(self.cmaBuffer0,src,src.nbytes)
+            self.dmaOut.transfer(self.cmaBuffer0)        
+        self.dmaIn.wait()
+        ret = np.ndarray(src.shape,src.dtype)
+        self.copyNto(ret,self.cmaBuffer1,ret.nbytes)
+        return ret
+
+    def cornerHarris(self, src, k, dst):
+        self.img_filters.select_filter(5)
+        self.cornerHarrisIP.rows = src.shape[0]
+        self.cornerHarrisIP.columns = src.shape[1]
+        self.cornerHarrisIP.start()
+        if hasattr(src, 'physical_address') and hasattr(dst, 'physical_address') and (dst.nbytes == src.nbytes*4):    
+            self.dmaIn.transfer(dst)
+            self.dmaOut.transfer(src)
+            self.dmaIn.wait()
+            return dst
+        
+        self.cmaBuffer2.nbytes = src.nbytes*4
+        self.dmaIn.transfer(self.cmaBuffer2)
+        if hasattr(src, 'physical_address') :
+            self.dmaOut.transfer(src)        
+        else:
+            self.cmaBuffer0.nbytes = src.nbytes
+            self.copyNto(self.cmaBuffer0,src,src.nbytes)
+            self.dmaOut.transfer(self.cmaBuffer0)        
+        self.dmaIn.wait()
+        ret = np.ndarray(src.shape,np.float32)
+        self.copyNto(ret,self.cmaBuffer2,ret.nbytes)
+        return ret
     
     def copyNto(self,dst,src,N):
         dstPtr = self.ffi.cast("uint8_t *", self.ffi.from_buffer(dst))
@@ -338,6 +477,7 @@ class cv2pynqDiverImageFilters(DefaultHierarchy):
         self.intc1.write(0x40 + 2*4, 0x80000000)#disable master2
         self.intc1.write(0x40 + 3*4, 0x80000000)#disable master3
         self.intc1.write(0x40 + 4*4, 0x80000000)#disable master4  
+        self.intc1.write(0x40 + 5*4, 0x80000000)#disable master5
         self.intc2.write(0x40, self.filter)#select slave# for master0 
         self.intc1.write(0x00, 0x2)#reset interconnect 1
         self.intc2.write(0x00, 0x2)#reset interconnect 2
@@ -351,7 +491,8 @@ class cv2pynqDiverImageFilters(DefaultHierarchy):
            and 'filter2D_hls_0' in description['ip'] \
            and 'filter2D_f_0' in description['ip'] \
            and 'erode_hls_0' in description['ip'] \
-           and 'dilate_hls_0' in description['ip'] :
+           and 'dilate_hls_0' in description['ip'] \
+           and 'filter2D_hls_5_0' in description['ip']:
             return True
         return False
     
@@ -457,6 +598,53 @@ class cv2pynqDriverFilter2D(DefaultIP):
             self.write(0x44, value)
             self.mode_value = value
 
+class cv2pynqDriverFilter2D_5(DefaultIP):
+    def __init__(self, description):
+        super().__init__(description=description)
+        self.reset()
+
+    bindto = ['xilinx.com:hls:filter2D_hls_5:1.0']
+
+    def start(self):
+        self.write(0x00, 0x01)
+
+    def auto_restart(self):
+        self.write(0x00, 0x81)
+
+    def reset(self):
+        self.rows_value = -1
+        self.rows = 0
+        self.columns_value = -1
+        self.columns = 0
+        self.par_V_value = bytes([0,0,0,0])
+        self.par_V = 0  
+ 
+    @property
+    def rows(self):
+        return self.read(0x14)
+    @rows.setter
+    def rows(self, value):
+        if not self.rows_value == value:
+            self.write(0x14, value)
+            self.rows_value = value
+
+    @property
+    def columns(self):
+        return self.read(0x1c)
+    @columns.setter
+    def columns(self, value):
+        if not self.columns_value == value:
+            self.write(0x1c, value)
+            self.columns_value = value
+
+    @property
+    def par_V(self):
+        return self.read(0x40)
+    @par_V.setter
+    def par_V(self, value):
+        if not self.par_V_value == value:
+            self.write(0x40, value)
+            self.par_V_value = value    
 
 class cv2pynqDriverFilter2D_f(DefaultIP):
     def __init__(self, description):
@@ -787,3 +975,51 @@ class cv2pynqDriverDilate(DefaultIP):
         if not self.mode_value == value:
             self.write(0x2c, value)
             self.mode_value = value
+
+class cv2pynqDriverCornerHarris(DefaultIP):
+    def __init__(self, description):
+        super().__init__(description=description)
+        self.reset()
+    bindto = ['xilinx.com:hls:CornerHarris_hls:1.0']
+
+    def start(self):
+        self.write(0x00, 0x01)
+    
+    def reset(self):
+        self.rows_value = -1
+        self.rows = 0
+        self.columns_value = -1
+        self.columns = 0
+        self.k_value_check = np.ndarray(1,np.float32)
+        self.k_value = np.ndarray(1,np.float32)
+        self.k_value[0] = -1
+        self.k = 0
+
+        
+    @property
+    def rows(self):
+        return self.read(0x14)
+    @rows.setter
+    def rows(self, value):
+        if not self.rows_value == value:
+            self.write(0x14, value)
+            self.rows_value = value
+
+    @property
+    def columns(self):
+        return self.read(0x1c)
+    @columns.setter
+    def columns(self, value):
+        if not self.columns_value == value:
+            self.write(0x1c, value)
+            self.columns_value = value
+
+    @property
+    def k(self):
+        return self.read(0x34)
+    @k.setter
+    def k(self, value):
+        self.k_value_check[0] = value
+        if not self.k_value[0] == self.k_value_check[0]:
+            self.k_value[0] = self.k_value_check[0]
+            self.write(0x34, int(self.k_value[0].view(dtype=np.int32)))
