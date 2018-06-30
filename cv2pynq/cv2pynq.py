@@ -18,14 +18,9 @@ class cv2pynq():
         self.bitstream_name = None
         self.bitstream_name = "cv2pynq03.bit"
         self.bitstream_path = os.path.join(CV2PYNQ_BIT_DIR, self.bitstream_name)
-        #if PL.bitfile_name != self.bitstream_path:#todo ol
-        #if load_overlay:
         self.ol = Overlay(self.bitstream_path)
         self.ol.download()
-        self.ol.reset() # todo
-        print("downloaded overlay", self.bitstream_path)
-        #else:
-        #    raise RuntimeError("Incorrect Overlay loaded")
+        self.ol.reset()
         self.xlnk = Xlnk()
         self.partitions = 10 #split the cma into partitions for pipelined transfer
         self.cmaPartitionLen = self.MAX_HEIGHT*self.MAX_WIDTH/self.partitions
@@ -33,7 +28,7 @@ class cv2pynq():
         self.img_filters = self.ol.image_filters
         self.dmaOut = self.img_filters.axi_dma_0.sendchannel 
         self.dmaIn =  self.img_filters.axi_dma_0.recvchannel 
-        self.dmaOut.stop()#todo
+        self.dmaOut.stop()
         self.dmaIn.stop()
         self.dmaIn.start()
         self.dmaOut.start()
@@ -73,49 +68,6 @@ class cv2pynq():
         self.cmaBuffer_2.close()
         for cma in self.listOfcma:
             cma.close()      
-
-
-    def filter2D(self, src, dst):
-        if dst is None :
-            self.cmaBuffer1.nbytes = src.nbytes
-            #ret = self.xlnk.cma_array(src.shape, dtype=np.uint8)
-        elif hasattr(src, 'physical_address') and hasattr(dst, 'physical_address') :
-            self.dmaIn.transfer(dst)
-            self.dmaOut.transfer(src)
-            self.dmaIn.wait()
-            return dst
-        if hasattr(src, 'physical_address') :
-            self.dmaIn.transfer(self.cmaBuffer1)
-            self.dmaOut.transfer(src)
-            self.dmaIn.wait()
-        else:#pipeline the copy to continuous memory and filter calculation in hardware
-            chunks = int(src.nbytes / (self.cmaPartitionLen) )
-            pointerCma = self.ffi.cast("uint8_t *",  self.ffi.from_buffer(self.listOfcma[0]))
-            pointerToImage = self.ffi.cast("uint8_t *", self.ffi.from_buffer(src))
-            if chunks > 0:
-                self.ffi.memmove(pointerCma, pointerToImage, self.listOfcma[0].nbytes)
-                self.dmaIn.transfer(self.cmaBuffer1)
-            for i in range(1,chunks):
-                while not self.dmaOut.idle and not self.dmaOut._first_transfer:
-                    pass 
-                self.dmaOut.transfer(self.listOfcma[i-1])
-                pointerCma = self.ffi.cast("uint8_t *",  self.ffi.from_buffer(self.listOfcma[i]))
-                self.ffi.memmove(pointerCma, pointerToImage+i*self.listOfcma[i].nbytes, self.listOfcma[i].nbytes)
-            if chunks > 0:
-                while not self.dmaOut.idle and not self.dmaOut._first_transfer:
-                    pass 
-                self.dmaOut.transfer(self.listOfcma[chunks-1])
-            if(src.nbytes % self.cmaPartitionLen != 0):#cleanup code - handle rest of image
-                rest = self.xlnk.cma_array(shape=(int(src.nbytes-chunks*self.cmaPartitionLen),1), dtype=np.uint8)
-                pointerCma = self.ffi.cast("uint8_t *",  self.ffi.from_buffer(rest))
-                self.ffi.memmove(pointerCma, pointerToImage+int(chunks*self.cmaPartitionLen), rest.nbytes)
-                while not self.dmaOut.idle and not self.dmaOut._first_transfer:
-                    pass 
-                self.dmaOut.transfer(rest)
-            self.dmaIn.wait()
-        ret = np.ndarray(src.shape,src.dtype)
-        self.copyNto(ret,self.cmaBuffer1,ret.nbytes)
-        return ret
 
     def Sobel(self,src, ddepth, dx, dy, dst, ksize):
         if(ksize == 3):
@@ -240,6 +192,120 @@ class cv2pynq():
             self.img_filters.select_filter(1)
             self.f2D.start()
             return self.filter2D(src, dst)
+
+    def blur(self,src, ksize, dst):
+        self.f2D_f.rows = src.shape[0]
+        self.f2D_f.columns = src.shape[1]
+        if (self.filter2DfType != 0)  :
+            self.filter2DfType = 0 #blur
+            mean = self.floatToFixed(1/9, cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
+            self.f2D_f.r11 = mean
+            self.f2D_f.r12 = mean
+            self.f2D_f.r13 = mean
+            self.f2D_f.r21 = mean
+            self.f2D_f.r22 = mean
+            self.f2D_f.r23 = mean
+            self.f2D_f.r31 = mean 
+            self.f2D_f.r32 = mean
+            self.f2D_f.r33 = mean
+        return self.filter2D_f(src, dst)
+    
+    def GaussianBlur(self, src, ksize, sigmaX, sigmaY, dst):
+        self.f2D_f.rows = src.shape[0]
+        self.f2D_f.columns = src.shape[1]
+        if (self.filter2DfType != 1)  :
+            self.filter2DfType = 1 #GaussianBlur
+            if(sigmaX <= 0):
+                sigmaX = 0.3*((ksize[0]-1)*0.5 - 1) + 0.8
+            if(sigmaY <= 0):
+                sigmaY = sigmaX
+            kX = cv2.getGaussianKernel(3,sigmaX,ktype=cv2.CV_32F) #kernel X
+            kY = cv2.getGaussianKernel(3,sigmaY,ktype=cv2.CV_32F) #kernel Y
+            self.f2D_f.r11 = self.floatToFixed(kY[0]*kX[0], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
+            self.f2D_f.r12 = self.floatToFixed(kY[0]*kX[1], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
+            self.f2D_f.r13 = self.floatToFixed(kY[0]*kX[2], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
+            self.f2D_f.r21 = self.floatToFixed(kY[1]*kX[0], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
+            self.f2D_f.r22 = self.floatToFixed(kY[1]*kX[1], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
+            self.f2D_f.r23 = self.floatToFixed(kY[1]*kX[2], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
+            self.f2D_f.r31 = self.floatToFixed(kY[2]*kX[0], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
+            self.f2D_f.r32 = self.floatToFixed(kY[2]*kX[1], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
+            self.f2D_f.r33 = self.floatToFixed(kY[2]*kX[2], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
+        return self.filter2D_f(src, dst)
+
+    def erode(self, src, kernel, dst, iterations, mode):
+        self.img_filters.select_filter(3)
+        return self.erodeDilateKernel(src, kernel, dst, iterations, mode, self.erodeIP)
+    
+    def dilate(self, src, kernel, dst, iterations, mode):
+        self.img_filters.select_filter(4)
+        return self.erodeDilateKernel(src, kernel, dst, iterations, mode, self.dilateIP)
+    
+    def Canny(self, src, threshold1, threshold2, dst):
+        self.img_filters.select_filter(0)
+        self.CannyIP.rows = src.shape[0]
+        self.CannyIP.columns = src.shape[1]
+        self.CannyIP.threshold1 = threshold1
+        self.CannyIP.threshold2 = threshold2
+        self.CannyIP.start()
+        if hasattr(src, 'physical_address') and hasattr(dst, 'physical_address'):    
+            self.dmaIn.transfer(dst)
+            self.dmaOut.transfer(src)
+            self.dmaIn.wait()
+            return dst
+        
+        self.cmaBuffer1.nbytes = src.nbytes
+        self.dmaIn.transfer(self.cmaBuffer1)
+        if hasattr(src, 'physical_address') :
+            self.dmaOut.transfer(src)        
+        else:
+            self.cmaBuffer0.nbytes = src.nbytes
+            self.copyNto(self.cmaBuffer0,src,src.nbytes)
+            self.dmaOut.transfer(self.cmaBuffer0)        
+        self.dmaIn.wait()
+        ret = np.ndarray(src.shape,src.dtype)
+        self.copyNto(ret,self.cmaBuffer1,ret.nbytes)
+        return ret
+    
+    def filter2D(self, src, dst):
+        if dst is None :
+            self.cmaBuffer1.nbytes = src.nbytes
+        elif hasattr(src, 'physical_address') and hasattr(dst, 'physical_address') :
+            self.dmaIn.transfer(dst)
+            self.dmaOut.transfer(src)
+            self.dmaIn.wait()
+            return dst
+        if hasattr(src, 'physical_address') :
+            self.dmaIn.transfer(self.cmaBuffer1)
+            self.dmaOut.transfer(src)
+            self.dmaIn.wait()
+        else:#pipeline the copy to continuous memory and filter calculation in hardware
+            chunks = int(src.nbytes / (self.cmaPartitionLen) )
+            pointerCma = self.ffi.cast("uint8_t *",  self.ffi.from_buffer(self.listOfcma[0]))
+            pointerToImage = self.ffi.cast("uint8_t *", self.ffi.from_buffer(src))
+            if chunks > 0:
+                self.ffi.memmove(pointerCma, pointerToImage, self.listOfcma[0].nbytes)
+                self.dmaIn.transfer(self.cmaBuffer1)
+            for i in range(1,chunks):
+                while not self.dmaOut.idle and not self.dmaOut._first_transfer:
+                    pass 
+                self.dmaOut.transfer(self.listOfcma[i-1])
+                pointerCma = self.ffi.cast("uint8_t *",  self.ffi.from_buffer(self.listOfcma[i]))
+                self.ffi.memmove(pointerCma, pointerToImage+i*self.listOfcma[i].nbytes, self.listOfcma[i].nbytes)
+            if chunks > 0:
+                while not self.dmaOut.idle and not self.dmaOut._first_transfer:
+                    pass 
+                self.dmaOut.transfer(self.listOfcma[chunks-1])
+            if(src.nbytes % self.cmaPartitionLen != 0):#cleanup code - handle rest of image
+                rest = self.xlnk.cma_array(shape=(int(src.nbytes-chunks*self.cmaPartitionLen),1), dtype=np.uint8)
+                pointerCma = self.ffi.cast("uint8_t *",  self.ffi.from_buffer(rest))
+                self.ffi.memmove(pointerCma, pointerToImage+int(chunks*self.cmaPartitionLen), rest.nbytes)
+                while not self.dmaOut.idle and not self.dmaOut._first_transfer:
+                    pass 
+                self.dmaOut.transfer(rest)
+            self.dmaIn.wait()
+        ret = np.ndarray(src.shape,src.dtype)
+        self.copyNto(ret,self.cmaBuffer1,ret.nbytes)
+        return ret
     
     def filter2D_f(self, src, dst):
         self.img_filters.select_filter(2)
@@ -292,45 +358,6 @@ class cv2pynq():
         if(f < 0):
             fix += 1 << total_bits-1
         return fix
-
-    def blur(self,src, ksize, dst):
-        self.f2D_f.rows = src.shape[0]
-        self.f2D_f.columns = src.shape[1]
-        if (self.filter2DfType != 0)  :
-            self.filter2DfType = 0 #blur
-            mean = self.floatToFixed(1/9, cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
-            self.f2D_f.r11 = mean
-            self.f2D_f.r12 = mean
-            self.f2D_f.r13 = mean
-            self.f2D_f.r21 = mean
-            self.f2D_f.r22 = mean
-            self.f2D_f.r23 = mean
-            self.f2D_f.r31 = mean 
-            self.f2D_f.r32 = mean
-            self.f2D_f.r33 = mean
-        return self.filter2D_f(src, dst)
-    
-    def GaussianBlur(self, src, ksize, sigmaX, sigmaY, dst):
-        self.f2D_f.rows = src.shape[0]
-        self.f2D_f.columns = src.shape[1]
-        if (self.filter2DfType != 1)  :
-            self.filter2DfType = 1 #GaussianBlur
-            if(sigmaX <= 0):
-                sigmaX = 0.3*((ksize[0]-1)*0.5 - 1) + 0.8
-            if(sigmaY <= 0):
-                sigmaY = sigmaX
-            kX = cv2.getGaussianKernel(3,sigmaX,ktype=cv2.CV_32F) #kernel X
-            kY = cv2.getGaussianKernel(3,sigmaY,ktype=cv2.CV_32F) #kernel Y
-            self.f2D_f.r11 = self.floatToFixed(kY[0]*kX[0], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
-            self.f2D_f.r12 = self.floatToFixed(kY[0]*kX[1], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
-            self.f2D_f.r13 = self.floatToFixed(kY[0]*kX[2], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
-            self.f2D_f.r21 = self.floatToFixed(kY[1]*kX[0], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
-            self.f2D_f.r22 = self.floatToFixed(kY[1]*kX[1], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
-            self.f2D_f.r23 = self.floatToFixed(kY[1]*kX[2], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
-            self.f2D_f.r31 = self.floatToFixed(kY[2]*kX[0], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
-            self.f2D_f.r32 = self.floatToFixed(kY[2]*kX[1], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
-            self.f2D_f.r33 = self.floatToFixed(kY[2]*kX[2], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
-        return self.filter2D_f(src, dst)
     
     def erodeDilateKernel(self, src, kernel, dst, iterations, mode, filter):
         filter.mode = mode
@@ -386,40 +413,6 @@ class cv2pynq():
             self.copyNto(ret,self.cmaBuffer1,ret.nbytes)
         else:
             self.copyNto(ret,self.cmaBuffer2,ret.nbytes)
-        return ret
-
-    def erode(self, src, kernel, dst, iterations, mode):
-        self.img_filters.select_filter(3)
-        return self.erodeDilateKernel(src, kernel, dst, iterations, mode, self.erodeIP)
-    
-    def dilate(self, src, kernel, dst, iterations, mode):
-        self.img_filters.select_filter(4)
-        return self.erodeDilateKernel(src, kernel, dst, iterations, mode, self.dilateIP)
-    
-    def Canny(self, src, threshold1, threshold2, dst):
-        self.img_filters.select_filter(0)
-        self.CannyIP.rows = src.shape[0]
-        self.CannyIP.columns = src.shape[1]
-        self.CannyIP.threshold1 = threshold1
-        self.CannyIP.threshold2 = threshold2
-        self.CannyIP.start()
-        if hasattr(src, 'physical_address') and hasattr(dst, 'physical_address'):    
-            self.dmaIn.transfer(dst)
-            self.dmaOut.transfer(src)
-            self.dmaIn.wait()
-            return dst
-        
-        self.cmaBuffer1.nbytes = src.nbytes
-        self.dmaIn.transfer(self.cmaBuffer1)
-        if hasattr(src, 'physical_address') :
-            self.dmaOut.transfer(src)        
-        else:
-            self.cmaBuffer0.nbytes = src.nbytes
-            self.copyNto(self.cmaBuffer0,src,src.nbytes)
-            self.dmaOut.transfer(self.cmaBuffer0)        
-        self.dmaIn.wait()
-        ret = np.ndarray(src.shape,src.dtype)
-        self.copyNto(ret,self.cmaBuffer1,ret.nbytes)
         return ret
 
     def cornerHarris(self, src, k, dst):

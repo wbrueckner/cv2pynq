@@ -1,11 +1,19 @@
 from setuptools import setup
 import os
+import shutil
 import cv2pynq
 
 if 'BOARD' not in os.environ or os.environ['BOARD'] != 'Pynq-Z1':
     print("Only supported on a Pynq Z1 Board")
     exit(1)
 
+# Notebook copy
+WORK_DIR = os.path.dirname(os.path.realpath(__file__))
+src_nb = WORK_DIR + '/notebooks'
+dst_nb_dir = '/home/xilinx/jupyter_notebooks/cv2PYNQ'
+if os.path.exists(dst_nb_dir):
+    shutil.rmtree(dst_nb_dir)
+shutil.copytree(src_nb, dst_nb_dir)
 
 setup(name='cv2pynq',
       version=cv2pynq.__version__,
@@ -25,5 +33,3 @@ setup(name='cv2pynq',
       ],
       dependency_links=['http://github.com/xilinx/PYNQ'],
       zip_safe=False)
-
-#/opt/python3.6/lib/python3.6/site-packages
