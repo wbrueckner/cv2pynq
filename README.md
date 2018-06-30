@@ -9,11 +9,11 @@ are located in the continuous memory of the chip.
 
 ## Get Started
 Install by typing: 
-    ```
-    git clone https://github.com/wbrueckner/cv2pynq.git
-    cd cv2pynq/
-    pip3.6 install -e .
-    ``` 
+```
+git clone https://github.com/wbrueckner/cv2pynq.git   
+cd cv2pynq/   
+pip3.6 install -e .   
+``` 
 into the terminal on your Pynq-Z1 board. 
 The library comes with a jupyter notebook to demonstrate its usage and capabilities.
 You find the notebook in the cv2PYNQ folder of your home tree after installation.
