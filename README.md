@@ -14,8 +14,8 @@ git clone https://github.com/wbrueckner/cv2pynq.git
 cd cv2pynq/   
 pip3.6 install -e .   
 ``` 
-into the terminal on your Pynq-Z1 board. 
-The library comes with a jupyter notebook to demonstrate its usage and capabilities.
+into the terminal on your Pynq-Z1 board.   
+The library comes with a [jupyter notebook](https://github.com/wbrueckner/cv2pynq/blob/master/notebooks/cv2PYNQ%20-%20Get%20Started.ipynb) to demonstrate its usage and capabilities.
 You find the notebook in the cv2PYNQ folder of your home tree after installation.
 
 Link to YouTube Video:
