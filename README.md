@@ -9,7 +9,7 @@ are located in the continuous memory of the chip.
 
 ## Get Started
 Install by typing: 
-    ```bash 
+    ```
     sudo pip3.6 install git+https://github.com/wbrueckner/cv2pynq.git
     ``` 
 into the terminal on your Pynq-Z1 board. 
