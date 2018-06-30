@@ -9,8 +9,10 @@ are located in the continuous memory of the chip.
 
 ## Get Started
 Install by typing: 
-    ```bash 
-    sudo pip3.6 install git+https://github.com/wbrueckner/cv2pynq.git
+    ```
+    git clone https://github.com/wbrueckner/cv2pynq.git
+    cd cv2pynq/
+    pip3.6 install -e .
     ``` 
 into the terminal on your Pynq-Z1 board. 
 The library comes with a jupyter notebook to demonstrate its usage and capabilities.
@@ -28,12 +30,6 @@ Currently accelerated functions:
 - erode: ksize = 3
 - dilate: ksize = 3
 - Canny 
-
-## Installation after cloning
- 
-You can also install the package after cloning this repository and type  `pip3.6 install -e .` in the directory. 
-
-Remove the package by typing: `pip3.6 uninstall cv2pynq`
 
 ## Contribute to cv2PYNQ
 
