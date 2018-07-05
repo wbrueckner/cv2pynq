@@ -5,7 +5,7 @@ The calculation of time-consuming tasks is implemented in the Programmable Logic
 cv2PYNQ also includes the Video-Subsystem of the [base](https://github.com/Xilinx/PYNQ) project of PYNQ.
 Therefore, the HDMI In and Out interfaces can be used in your application.
 The library calculates every filter for gray-channel images with 1080p within 16 ms if the input and output buffers 
-are located in the continuous memory of the chip. 
+are located in the contiguous memory of the chip. 
 
 ## Get Started
 Install by typing: 

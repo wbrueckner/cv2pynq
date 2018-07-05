@@ -61,8 +61,8 @@ class cv2pynq():
         #self.cornerHarrisIP.reset()
 
     def close(self):
-        self.dmaOut.stop()
-        self.dmaIn.stop()
+        #self.dmaOut.stop()
+        #self.dmaIn.stop()
         self.cmaBuffer_0.close()
         self.cmaBuffer_1.close()
         self.cmaBuffer_2.close()
@@ -208,7 +208,9 @@ class cv2pynq():
             self.f2D_f.r31 = mean 
             self.f2D_f.r32 = mean
             self.f2D_f.r33 = mean
-        return self.filter2D_f(src, dst)
+        self.img_filters.select_filter(2)
+        self.f2D_f.start()
+        return self.filter2D(src, dst)
     
     def GaussianBlur(self, src, ksize, sigmaX, sigmaY, dst):
         self.f2D_f.rows = src.shape[0]
@@ -230,7 +232,9 @@ class cv2pynq():
             self.f2D_f.r31 = self.floatToFixed(kY[2]*kX[0], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
             self.f2D_f.r32 = self.floatToFixed(kY[2]*kX[1], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
             self.f2D_f.r33 = self.floatToFixed(kY[2]*kX[2], cv2pynqDriverFilter2D_f.K_FP_W, cv2pynqDriverFilter2D_f.K_FP_F)
-        return self.filter2D_f(src, dst)
+        self.img_filters.select_filter(2)
+        self.f2D_f.start()
+        return self.filter2D(src, dst)
 
     def erode(self, src, kernel, dst, iterations, mode):
         self.img_filters.select_filter(3)
@@ -278,75 +282,41 @@ class cv2pynq():
             self.dmaIn.transfer(self.cmaBuffer1)
             self.dmaOut.transfer(src)
             self.dmaIn.wait()
-        else:#pipeline the copy to continuous memory and filter calculation in hardware
-            chunks = int(src.nbytes / (self.cmaPartitionLen) )
-            pointerCma = self.ffi.cast("uint8_t *",  self.ffi.from_buffer(self.listOfcma[0]))
-            pointerToImage = self.ffi.cast("uint8_t *", self.ffi.from_buffer(src))
-            if chunks > 0:
-                self.ffi.memmove(pointerCma, pointerToImage, self.listOfcma[0].nbytes)
-                self.dmaIn.transfer(self.cmaBuffer1)
-            for i in range(1,chunks):
-                while not self.dmaOut.idle and not self.dmaOut._first_transfer:
-                    pass 
-                self.dmaOut.transfer(self.listOfcma[i-1])
-                pointerCma = self.ffi.cast("uint8_t *",  self.ffi.from_buffer(self.listOfcma[i]))
-                self.ffi.memmove(pointerCma, pointerToImage+i*self.listOfcma[i].nbytes, self.listOfcma[i].nbytes)
-            if chunks > 0:
-                while not self.dmaOut.idle and not self.dmaOut._first_transfer:
-                    pass 
-                self.dmaOut.transfer(self.listOfcma[chunks-1])
-            if(src.nbytes % self.cmaPartitionLen != 0):#cleanup code - handle rest of image
-                rest = self.xlnk.cma_array(shape=(int(src.nbytes-chunks*self.cmaPartitionLen),1), dtype=np.uint8)
-                pointerCma = self.ffi.cast("uint8_t *",  self.ffi.from_buffer(rest))
-                self.ffi.memmove(pointerCma, pointerToImage+int(chunks*self.cmaPartitionLen), rest.nbytes)
-                while not self.dmaOut.idle and not self.dmaOut._first_transfer:
-                    pass 
-                self.dmaOut.transfer(rest)
-            self.dmaIn.wait()
-        ret = np.ndarray(src.shape,src.dtype)
-        self.copyNto(ret,self.cmaBuffer1,ret.nbytes)
-        return ret
-    
-    def filter2D_f(self, src, dst):
-        self.img_filters.select_filter(2)
-        #f2D = self.img_filters.filter2D_f_0
-        self.f2D_f.start()
-        if dst is None :
+        else:#pipeline the copy to contiguous memory and filter calculation in hardware
+            if src.nbytes < 184800: #440x420
+                self.partitions = 1
+            elif src.nbytes < 180000: #600x300
+                self.partitions = 2
+            elif src.nbytes < 231200: #680x340
+                self.partitions = 4
+            else :
+                self.partitions = 8
             self.cmaBuffer1.nbytes = src.nbytes
-            #ret = self.xlnk.cma_array(src.shape, dtype=np.uint8)
-        elif hasattr(src, 'physical_address') and hasattr(dst, 'physical_address') :
-            self.dmaIn.transfer(dst)
-            self.dmaOut.transfer(src)
-            self.dmaIn.wait()
-            return dst
-        if hasattr(src, 'physical_address') :
-            self.dmaIn.transfer(self.cmaBuffer1)
-            self.dmaOut.transfer(src)
-            self.dmaIn.wait()
-        else:#pipeline the copy to continuous memory and filter calculation in hardware
-            chunks = int(src.nbytes / (self.cmaPartitionLen) )
-            pointerCma = self.ffi.cast("uint8_t *",  self.ffi.from_buffer(self.listOfcma[0]))
-            pointerToImage = self.ffi.cast("uint8_t *", self.ffi.from_buffer(src))
-            if chunks > 0:
-                self.ffi.memmove(pointerCma, pointerToImage, self.listOfcma[0].nbytes)
                 self.dmaIn.transfer(self.cmaBuffer1)
-            for i in range(1,chunks):
+            chunks_len = int(src.nbytes / (self.partitions))
+            self.cmaBuffer0.nbytes = chunks_len
+            self.cmaBuffer2.nbytes = chunks_len
+            self.copyNto(src,self.cmaBuffer0,chunks_len)
+            for i in range(1,self.partitions):
+                if i % 2 == 1:
                 while not self.dmaOut.idle and not self.dmaOut._first_transfer:
                     pass 
-                self.dmaOut.transfer(self.listOfcma[i-1])
-                pointerCma = self.ffi.cast("uint8_t *",  self.ffi.from_buffer(self.listOfcma[i]))
-                self.ffi.memmove(pointerCma, pointerToImage+i*self.listOfcma[i].nbytes, self.listOfcma[i].nbytes)
-            if chunks > 0:
+                    self.dmaOut.transfer(self.cmaBuffer0)
+                    self.copyNtoOff(src ,self.cmaBuffer2,chunks_len, i*chunks_len, 0)
+                else:
                 while not self.dmaOut.idle and not self.dmaOut._first_transfer:
                     pass 
-                self.dmaOut.transfer(self.listOfcma[chunks-1])
-            if(src.nbytes % self.cmaPartitionLen != 0):#cleanup code - handle rest of image
-                rest = self.xlnk.cma_array(shape=(int(src.nbytes-chunks*self.cmaPartitionLen),1), dtype=np.uint8)
-                pointerCma = self.ffi.cast("uint8_t *",  self.ffi.from_buffer(rest))
-                self.ffi.memmove(pointerCma, pointerToImage+int(chunks*self.cmaPartitionLen), rest.nbytes)
+                    self.dmaOut.transfer(self.cmaBuffer2)
+                    self.copyNtoOff(src ,self.cmaBuffer0,chunks_len,  i*chunks_len, 0)
                 while not self.dmaOut.idle and not self.dmaOut._first_transfer:
                     pass 
-                self.dmaOut.transfer(rest)
+            self.dmaOut.transfer(self.cmaBuffer2)
+            rest = src.nbytes % self.partitions 
+            if rest != 0: #cleanup any remaining data and send it to HW
+                self.copyNtoOff(src ,self.cmaBuffer0,chunks_len, self.partitions*chunks_len, 0)
+                while not self.dmaOut.idle and not self.dmaOut._first_transfer:
+                    pass 
+                self.dmaOut.transfer(self.cmaBuffer0)
             self.dmaIn.wait()
         ret = np.ndarray(src.shape,src.dtype)
         self.copyNto(ret,self.cmaBuffer1,ret.nbytes)
@@ -415,7 +385,7 @@ class cv2pynq():
             self.copyNto(ret,self.cmaBuffer2,ret.nbytes)
         return ret
 
-    def cornerHarris(self, src, k, dst):
+    '''def cornerHarris(self, src, k, dst):
         self.img_filters.select_filter(5)
         self.cornerHarrisIP.rows = src.shape[0]
         self.cornerHarrisIP.columns = src.shape[1]
@@ -437,11 +407,18 @@ class cv2pynq():
         self.dmaIn.wait()
         ret = np.ndarray(src.shape,np.float32)
         self.copyNto(ret,self.cmaBuffer2,ret.nbytes)
-        return ret
+        return ret'''
     
     def copyNto(self,dst,src,N):
         dstPtr = self.ffi.cast("uint8_t *", self.ffi.from_buffer(dst))
         srcPtr = self.ffi.cast("uint8_t *", self.ffi.from_buffer(src))
+        self.ffi.memmove(dstPtr, srcPtr, N)
+
+    def copyNtoOff(self,dst,src,N,dstOffset,srcOffset):   
+        dstPtr = self.ffi.cast("uint8_t *", self.ffi.from_buffer(dst))
+        srcPtr = self.ffi.cast("uint8_t *", self.ffi.from_buffer(src))
+        dstPtr += dstOffset
+        srcPtr += srcOffset
         self.ffi.memmove(dstPtr, srcPtr, N)
 
     class ContiguousArrayCv2pynq(ContiguousArray):
@@ -466,7 +443,7 @@ class cv2pynqDiverImageFilters(DefaultHierarchy):
         self.intc2 = MMIO(0x43C20000, 0x10000)#get axis_interconnect_2
         self.filter = 1
         self.intc1.write(0x40 + 0*4, 0x80000000)#disable master0
-        self.intc1.write(0x40 + 1*4, 0x00000000)#select slave0 for master0
+        self.intc1.write(0x40 + 1*4, 0x00000000)#select slave0 for master1
         self.intc1.write(0x40 + 2*4, 0x80000000)#disable master2
         self.intc1.write(0x40 + 3*4, 0x80000000)#disable master3
         self.intc1.write(0x40 + 4*4, 0x80000000)#disable master4  
