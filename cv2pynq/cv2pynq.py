@@ -292,24 +292,24 @@ class cv2pynq():
             else :
                 self.partitions = 8
             self.cmaBuffer1.nbytes = src.nbytes
-                self.dmaIn.transfer(self.cmaBuffer1)
+            self.dmaIn.transfer(self.cmaBuffer1)
             chunks_len = int(src.nbytes / (self.partitions))
             self.cmaBuffer0.nbytes = chunks_len
             self.cmaBuffer2.nbytes = chunks_len
             self.copyNto(src,self.cmaBuffer0,chunks_len)
             for i in range(1,self.partitions):
                 if i % 2 == 1:
-                while not self.dmaOut.idle and not self.dmaOut._first_transfer:
-                    pass 
+                    while not self.dmaOut.idle and not self.dmaOut._first_transfer:
+                        pass 
                     self.dmaOut.transfer(self.cmaBuffer0)
                     self.copyNtoOff(src ,self.cmaBuffer2,chunks_len, i*chunks_len, 0)
                 else:
-                while not self.dmaOut.idle and not self.dmaOut._first_transfer:
-                    pass 
+                    while not self.dmaOut.idle and not self.dmaOut._first_transfer:
+                        pass 
                     self.dmaOut.transfer(self.cmaBuffer2)
                     self.copyNtoOff(src ,self.cmaBuffer0,chunks_len,  i*chunks_len, 0)
-                while not self.dmaOut.idle and not self.dmaOut._first_transfer:
-                    pass 
+            while not self.dmaOut.idle and not self.dmaOut._first_transfer:
+                pass 
             self.dmaOut.transfer(self.cmaBuffer2)
             rest = src.nbytes % self.partitions 
             if rest != 0: #cleanup any remaining data and send it to HW
